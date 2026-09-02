@@ -22,11 +22,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
     success INTEGER,
     error TEXT,
     duration_ms INTEGER,
-    result_json TEXT
+    result_json TEXT,
+    review_status TEXT,
+    review_note TEXT
 );
 """
 
-_MIGRATION = "ALTER TABLE audit_log ADD COLUMN result_json TEXT"
+_MIGRATIONS = {
+    "result_json": "ALTER TABLE audit_log ADD COLUMN result_json TEXT",
+    "review_status": "ALTER TABLE audit_log ADD COLUMN review_status TEXT",
+    "review_note": "ALTER TABLE audit_log ADD COLUMN review_note TEXT",
+}
 
 
 def init_audit_db() -> None:
@@ -36,13 +42,45 @@ def init_audit_db() -> None:
     conn.executescript(_AUDIT_SCHEMA)
 
     cols = {row[1] for row in conn.execute("PRAGMA table_info(audit_log)").fetchall()}
-    if "result_json" not in cols:
+    for column, statement in _MIGRATIONS.items():
+        if column in cols:
+            continue
         try:
-            conn.execute(_MIGRATION)
+            conn.execute(statement)
             conn.commit()
-            print("[audit] migrated: added result_json column", flush=True)
+            print(f"[audit] migrated: added {column} column", flush=True)
         except sqlite3.OperationalError:
             pass
+
+    if os.environ.get("AGENTOPS_DEMO", "").lower() == "true":
+        existing = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+        if existing == 0:
+            samples = [
+                ("search_web", "browser", 1, None, 184, {"query": "Q3 customer escalations"}),
+                ("list_repository_issues", "github", 1, None, 92, {"repo": "acme/platform"}),
+                ("send_message", "slack", 1, None, 241, {"channel": "#support", "text": "Incident update drafted"}),
+                ("create_issue", "github", 1, None, 318, {"repo": "acme/platform", "title": "Retry failed webhook deliveries"}),
+                ("delete_calendar_event", "calendar", 0, "Permission denied by provider", 427, {"event_id": "evt_4821"}),
+                ("query_warehouse", "postgres", 1, None, 126, {"query": "SELECT plan, count(*) FROM accounts GROUP BY plan"}),
+                ("publish_campaign", "hubspot", 1, None, 356, {"campaign": "Lifecycle reactivation"}),
+                ("get_deploy_status", "vercel", 1, None, 73, {"project": "customer-portal"}),
+            ]
+            for index, (tool, plugin, success, error, duration, args) in enumerate(samples):
+                conn.execute(
+                    """INSERT INTO audit_log
+                       (timestamp, key_id, tool_name, plugin, args_json, success, error, duration_ms, result_json)
+                       VALUES (datetime('now', ?), 'admin', ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"-{index * 17 + 3} minutes",
+                        tool,
+                        plugin,
+                        json.dumps(args),
+                        success,
+                        error,
+                        duration,
+                        json.dumps({"ok": bool(success)}),
+                    ),
+                )
 
     conn.commit()
     conn.close()
@@ -117,3 +155,18 @@ def get_audit_entry(entry_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM audit_log WHERE id = ?", (entry_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def set_review_status(entry_id: int, status: str, note: str | None = None) -> bool:
+    """Record a human review decision for a high-risk tool call."""
+    if status not in {"acknowledged", "escalated"}:
+        raise ValueError("Invalid review status")
+    conn = sqlite3.connect(_DB_PATH, timeout=5)
+    cursor = conn.execute(
+        "UPDATE audit_log SET review_status = ?, review_note = ? WHERE id = ?",
+        (status, note or None, entry_id),
+    )
+    conn.commit()
+    updated = cursor.rowcount == 1
+    conn.close()
+    return updated

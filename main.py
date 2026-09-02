@@ -27,7 +27,6 @@ import audit
 import dashboard
 import external_mcp
 import media
-import llm_proxy
 
 from plugin_base import (
     MCPPlugin,
@@ -1622,17 +1621,7 @@ def _build_app() -> ASGIApp:
     @contextlib.asynccontextmanager
     async def lifespan(app):
         async with mcp_handler.session_manager.run():
-            from pod_manager import idle_watcher as _idle_watcher
-            _watcher_task = asyncio.create_task(_idle_watcher(pod_registry))
-            try:
-                yield
-            finally:
-                _watcher_task.cancel()
-                try:
-                    await _watcher_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                await pod_registry.aclose()
+            yield
 
     sse = SseServerTransport("/messages")
     mcp_server = mcp._mcp_server
@@ -1641,15 +1630,6 @@ def _build_app() -> ASGIApp:
         async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
             await mcp_server.run(streams[0], streams[1], mcp_server.create_initialization_options())
 
-    litellm_proxy_url = os.environ.get("LITELLM_PROXY_URL", "http://127.0.0.1:4000").rstrip("/")
-    runpod_api_key = os.environ.get("RUNPOD_API_KEY", "")
-    # Persist slot→pod_id mapping to the Fly volume so that auto-respawned
-    # pod_ids survive gateway restarts. Without this the registry boots with
-    # whatever pod_id is hard-coded in POD_CONFIGS and points at a (likely
-    # terminated) old pod until the next respawn fires.
-    pod_state_path = os.environ.get("POD_STATE_PATH", "/data/pod_state.json")
-    pod_registry = llm_proxy.build_pod_registry(runpod_api_key, state_path=pod_state_path)
-    _llm_app = llm_proxy.make_proxy_asgi(pod_registry, litellm_proxy_url)
 
     routes = [
         Route("/.well-known/oauth-protected-resource", oauth_protected_resource),
@@ -1669,8 +1649,6 @@ def _build_app() -> ASGIApp:
         Route("/api/v1/tools/{tool_name}", api_get_tool_schema),
         Route("/api/v1/call", api_call_tool, methods=["POST"]),
         Route("/api/v1/batch", api_batch, methods=["POST"]),
-        *llm_proxy.make_status_routes(pod_registry),
-        Mount("/llm", app=_llm_app),
     ]
 
 

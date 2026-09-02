@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: agentops-desk-demo
+    runtime: python
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /dash
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: MCP_AUTH_TOKEN
+        value: agentops-demo
+      - key: AGENTOPS_DEMO
+        value: "true"
+      - key: GATEWAY_DB_PATH
+        value: /tmp/agentops-demo.db

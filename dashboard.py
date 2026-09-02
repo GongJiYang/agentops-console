@@ -26,6 +26,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 import auth
+import audit
 import external_mcp
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -214,6 +215,45 @@ def _get_distinct_audit_values() -> tuple[list[str], list[str]]:
     return keys, plugins
 
 
+_HIGH_RISK_VERBS = (
+    "send",
+    "delete",
+    "remove",
+    "create",
+    "update",
+    "write",
+    "publish",
+    "deploy",
+    "invite",
+    "transfer",
+    "execute",
+)
+
+
+def _risk_level(entry: dict) -> str:
+    tool_name = str(entry.get("tool_name") or "").lower()
+    if not entry.get("success", 1):
+        return "high"
+    if any(verb in tool_name for verb in _HIGH_RISK_VERBS):
+        return "high"
+    return "low"
+
+
+def _get_review_queue(key_id: str, is_admin: bool, limit: int = 8) -> list[dict]:
+    conn = _db()
+    if is_admin:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE review_status IS NULL ORDER BY id DESC LIMIT 200"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM audit_log WHERE key_id = ? AND review_status IS NULL ORDER BY id DESC LIMIT 200",
+            (key_id,),
+        ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows if _risk_level(dict(row)) == "high"][:limit]
+
+
 # ── HTML helpers ──────────────────────────────────────────────────────────────
 
 def _html(body: str, title: str = "MCP Gateway") -> HTMLResponse:
@@ -239,14 +279,15 @@ def _html(body: str, title: str = "MCP Gateway") -> HTMLResponse:
 _CSS = """<style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#ffffff;--bg2:#f8f9fa;--bg3:#f0f1f3;--text:#1a1a1a;--text2:#6b7280;
-  --border:#e5e7eb;--accent:#3b82f6;--accent-hover:#2563eb;
-  --success:#22c55e;--error:#ef4444;--error-bg:rgba(239,68,68,0.06);
-  --card-shadow:0 1px 3px rgba(0,0,0,0.1);
-  --pill-read:#dbeafe;--pill-read-text:#1e40af;
-  --pill-write:#fef3c7;--pill-write-text:#92400e;
-  --pill-admin:#fce7f3;--pill-admin-text:#9d174d;
-  --modal-bg:rgba(0,0,0,0.4);
+  --bg:#f7f8fb;--bg2:#ffffff;--bg3:#f1f3f7;--text:#18202f;--text2:#687386;
+  --border:#e2e6ed;--accent:#3157d5;--accent-hover:#2748b7;
+  --success:#16865c;--error:#d64545;--error-bg:rgba(214,69,69,0.07);
+  --warning:#b86d08;--warning-bg:#fff8e8;
+  --card-shadow:0 1px 2px rgba(24,32,47,0.04),0 8px 24px rgba(24,32,47,0.04);
+  --pill-read:#e8efff;--pill-read-text:#2849aa;
+  --pill-write:#fff1d7;--pill-write-text:#8c5700;
+  --pill-admin:#f5e8ff;--pill-admin-text:#71369a;
+  --modal-bg:rgba(15,23,42,0.48);
 }
 [data-theme="dark"]{
   --bg:#0a0a0a;--bg2:#141414;--bg3:#1c1c1c;--text:#e5e7eb;--text2:#9ca3af;
@@ -340,11 +381,12 @@ a:hover{text-decoration:underline}
 }
 .stat-card{
   background:var(--bg2);border:1px solid var(--border);
-  border-radius:8px;padding:20px;
+  border-radius:12px;padding:20px;box-shadow:var(--card-shadow);
 }
-.stat-card .label{font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
-.stat-card .value{font-size:28px;font-weight:600;letter-spacing:-0.5px}
+.stat-card .label{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.7px;margin-bottom:6px}
+.stat-card .value{font-size:28px;font-weight:650;letter-spacing:-0.8px}
 .stat-card .value.error{color:var(--error)}
+.stat-card .hint{font-size:11px;color:var(--text2);margin-top:5px}
 
 .plugin-grid{
   display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
@@ -400,6 +442,24 @@ tr.clickable-row:hover td{background:var(--bg3)}
 tr.row-error td{background:var(--error-bg)}
 .status-ok{color:var(--success)}
 .status-err{color:var(--error)}
+
+/* Risk review queue */
+.review-list{display:grid;gap:10px;margin:12px 0 28px}
+.review-card{
+  background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--warning);
+  border-radius:10px;padding:14px 16px;box-shadow:var(--card-shadow);
+  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;
+}
+.review-main{min-width:0}
+.review-title{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;font-weight:600}
+.review-meta{display:flex;gap:12px;flex-wrap:wrap;color:var(--text2);font-size:11px;margin-top:6px}
+.review-reason{font-size:12px;color:var(--warning);margin-top:5px}
+.review-actions{display:flex;gap:6px}
+.risk-pill{background:var(--warning-bg);color:var(--warning);padding:2px 7px;border-radius:999px;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.empty-review{border:1px dashed var(--border);border-radius:10px;padding:18px;color:var(--text2);font-size:13px;text-align:center;background:var(--bg2)}
+.page-intro{margin:24px 0 4px}
+.page-intro h2{font-size:22px;letter-spacing:-.5px}
+.page-intro p{color:var(--text2);font-size:13px;margin-top:3px}
 
 /* Pagination */
 .pagination{
@@ -531,6 +591,8 @@ select.filter-input,select.form-input{cursor:pointer}
   .stat-grid{grid-template-columns:1fr 1fr}
   .plugin-grid{grid-template-columns:1fr}
   .header{flex-direction:column;align-items:flex-start}
+  .review-card{grid-template-columns:1fr}
+  .review-actions{justify-content:flex-start}
   .header-right{width:100%;justify-content:flex-end}
   td,th{padding:8px 10px;font-size:12px}
   .modal{padding:20px}
@@ -605,12 +667,13 @@ def _header_html(key_info: dict, active: str = "dashboard") -> str:
     return f"""<div class="container">
   <div class="header">
     <div class="header-left">
-      <h1>{label}</h1>
+      <h1>AgentOps Desk</h1>
+      <span class="key-id">{label}</span>
       <span class="key-id mono">{key_id}</span>
       {admin_badge}
     </div>
     <div class="header-right">
-      <a href="/dash" class="nav-link{dash_active}">Dashboard</a>
+      <a href="/dash" class="nav-link{dash_active}">Operations</a>
       {admin_link}
       <button id="theme-toggle" class="btn-icon" onclick="toggleTheme()" title="Toggle theme"></button>
       <a href="/dash/logout" class="btn btn-ghost btn-sm">Logout</a>
@@ -622,7 +685,7 @@ def _header_html(key_info: dict, active: str = "dashboard") -> str:
 def _footer_html() -> str:
     base = escape(_BASE_URL)
     return f"""<div class="container">
-  <div class="footer">MCP Gateway &middot; <span class="mono">{base}</span></div>
+  <div class="footer">AgentOps Desk &middot; MCP control plane &middot; <span class="mono">{base}</span></div>
 </div>"""
 
 
@@ -656,6 +719,32 @@ def _activity_table(entries: list[dict], show_key: bool = False) -> str:
 <tbody>{''.join(rows) if rows else f'<tr><td colspan="{empty_cols}" style="text-align:center;color:var(--text2);padding:24px">No activity yet</td></tr>'}</tbody>
 </table>
 </div>"""
+
+
+def _review_queue_html(entries: list[dict]) -> str:
+    if not entries:
+        return '<div class="empty-review">No risky or failed actions need review.</div>'
+    cards = []
+    for entry in entries:
+        eid = int(entry["id"])
+        tool = escape(entry.get("tool_name") or "\u2014")
+        plugin = escape(entry.get("plugin") or "\u2014")
+        key_id = escape(entry.get("key_id") or "\u2014")
+        ts = escape(str(entry.get("timestamp") or ""))
+        failed = not entry.get("success", 1)
+        reason = "Execution failed" if failed else "State-changing tool call"
+        cards.append(f"""<article class="review-card">
+  <div class="review-main">
+    <div class="review-title"><span class="risk-pill">Review</span><a class="mono" href="/dash/audit/{eid}">{tool}</a></div>
+    <div class="review-meta"><span>{plugin}</span><span class="mono">{key_id}</span><span data-ts="{ts}">{ts}</span></div>
+    <div class="review-reason">{reason} &middot; inspect arguments and response before closing.</div>
+  </div>
+  <form class="review-actions" method="POST" action="/dash/review/{eid}">
+    <button class="btn btn-ghost btn-sm" name="status" value="acknowledged">Acknowledge</button>
+    <button class="btn btn-danger btn-sm" name="status" value="escalated">Escalate</button>
+  </form>
+</article>""")
+    return f'<div class="review-list">{"".join(cards)}</div>'
 
 
 # ── Route handlers ────────────────────────────────────────────────────────────
@@ -842,8 +931,7 @@ async def audit_detail_page(request: Request) -> Response:
     except (ValueError, TypeError):
         return RedirectResponse("/dash", status_code=302)
 
-    import audit as audit_mod
-    entry = audit_mod.get_audit_entry(entry_id_int)
+    entry = audit.get_audit_entry(entry_id_int)
     if not entry:
         return RedirectResponse("/dash", status_code=302)
 
@@ -852,6 +940,27 @@ async def audit_detail_page(request: Request) -> Response:
         return RedirectResponse("/dash", status_code=302)
 
     return _render_audit_detail(key, entry)
+
+
+async def review_audit_entry(request: Request) -> Response:
+    key = _get_key_from_cookie(request)
+    if not key:
+        return RedirectResponse("/dash/login", status_code=302)
+    if not key.get("is_admin") and not key.get("can_audit", 1):
+        return RedirectResponse("/dash?flash=error&msg=Audit+access+required", status_code=302)
+
+    entry_id = int(request.path_params["entry_id"])
+    entry = audit.get_audit_entry(entry_id)
+    if not entry or (not key.get("is_admin") and entry.get("key_id") != key["id"]):
+        return RedirectResponse("/dash?flash=error&msg=Review+item+not+found", status_code=302)
+
+    form = await request.form()
+    status = str(form.get("status") or "")
+    if status not in {"acknowledged", "escalated"}:
+        return RedirectResponse("/dash?flash=error&msg=Invalid+review+decision", status_code=302)
+    audit.set_review_status(entry_id, status)
+    verb = "Escalated" if status == "escalated" else "Acknowledged"
+    return RedirectResponse(f"/dash?flash=success&msg={verb}+tool+call+{entry_id}", status_code=302)
 
 
 async def logout_page(request: Request) -> Response:
@@ -866,18 +975,18 @@ def _render_login(error: str = "") -> HTMLResponse:
     error_html = f'<div class="error-msg">{escape(error)}</div>' if error else ""
     body = f"""<div class="login-wrap">
   <div class="login-card">
-    <div class="login-logo">\u26a1</div>
-    <h1>MCP Gateway</h1>
-    <p class="subtitle">Enter your API key to continue</p>
+    <div class="login-logo">&#9670;</div>
+    <h1>AgentOps Desk</h1>
+    <p class="subtitle">Operate and audit your MCP agents from one control plane</p>
     {error_html}
     <form method="POST" action="/dash/login" autocomplete="off">
-      <label for="api_key">API Key</label>
+      <label for="api_key">Gateway API Key</label>
       <input type="password" id="api_key" name="api_key" placeholder="gw_..." autofocus>
-      <button type="submit" class="btn btn-primary">Connect</button>
+      <button type="submit" class="btn btn-primary">Open operations</button>
     </form>
   </div>
 </div>"""
-    return _html(body, title="Login \u2014 MCP Gateway")
+    return _html(body, title="Login \u2014 AgentOps Desk")
 
 
 # ── Dashboard renderer ────────────────────────────────────────────────────────
@@ -894,12 +1003,20 @@ def _render_dashboard(key_info: dict, request: Request) -> HTMLResponse:
         else ([], 0)
     )
     perms = auth.get_key_permissions(key_id)
+    review_queue = _get_review_queue(key_id, is_admin) if (is_admin or can_audit) else []
+    flash_kind = request.query_params.get("flash", "")
+    flash_message = request.query_params.get("msg", "")
+    flash_html = ""
+    if flash_kind and flash_message:
+        flash_class = "flash-success" if flash_kind == "success" else "flash-error"
+        flash_html = f'<div class="flash {flash_class}">{escape(flash_message)}</div>'
 
     stats_html = f"""<div class="stat-grid">
-  <div class="stat-card"><div class="label">Total Calls</div><div class="value">{stats['total']:,}</div></div>
-  <div class="stat-card"><div class="label">Today</div><div class="value">{stats['today']:,}</div></div>
-  <div class="stat-card"><div class="label">This Week</div><div class="value">{stats['week']:,}</div></div>
-  <div class="stat-card"><div class="label">Error Rate</div><div class="value{' error' if stats['error_rate'] > 5 else ''}">{stats['error_rate']}%</div></div>
+  <div class="stat-card"><div class="label">Total Calls</div><div class="value">{stats['total']:,}</div><div class="hint">Lifetime tool executions</div></div>
+  <div class="stat-card"><div class="label">Today</div><div class="value">{stats['today']:,}</div><div class="hint">Calls since midnight UTC</div></div>
+  <div class="stat-card"><div class="label">This Week</div><div class="value">{stats['week']:,}</div><div class="hint">Seven-day operating volume</div></div>
+  <div class="stat-card"><div class="label">Needs Review</div><div class="value{' error' if review_queue else ''}">{len(review_queue)}</div><div class="hint">Risky or failed calls</div></div>
+  <div class="stat-card"><div class="label">Error Rate</div><div class="value{' error' if stats['error_rate'] > 5 else ''}">{stats['error_rate']}%</div><div class="hint">All recorded calls</div></div>
 </div>"""
 
     # Plugins
@@ -938,12 +1055,6 @@ def _render_dashboard(key_info: dict, request: Request) -> HTMLResponse:
     # My Accounts section (non-admin users can manage their own credentials)
     accounts_html = ""
     if not is_admin:
-        flash_qs = request.query_params.get("flash", "")
-        flash_msg = request.query_params.get("msg", "")
-        flash_html = ""
-        if flash_qs and flash_msg:
-            flash_cls = "flash-success" if flash_qs == "success" else "flash-error"
-            flash_html = f'<div class="{flash_cls}">{escape(flash_msg)}</div>'
 
         accessible_plugins = sorted(perms.keys())
         account_rows = []
@@ -1024,7 +1135,7 @@ function addCredField(){
 }
 </script>"""
 
-        accounts_html = f"""{flash_html}
+        accounts_html = f"""
 <div class="section-title">My Accounts</div>
 <div class="table-wrap">
 <table>
@@ -1035,6 +1146,15 @@ function addCredField(){
 {creds_modal}
 {creds_js}"""
 
+    review_html = ""
+    if is_admin or can_audit:
+        review_html = f"""<div class="section-header">
+  <div>
+    <div class="section-title">Risk watchlist</div>
+  </div>
+  <span class="risk-pill">{len(review_queue)} open</span>
+</div>
+{_review_queue_html(review_queue)}"""
     if is_admin or can_audit:
         activity_html = f"""<div class="section-title">Recent Activity</div>
 {_activity_table(activity, show_key=is_admin)}
@@ -1044,14 +1164,20 @@ function addCredField(){
 
     body = f"""{_header_html(key_info, 'dashboard')}
 <div class="container">
+<div class="page-intro">
+  <h2>Operations overview</h2>
+  <p>Live execution health, human review, access, and connected tools.</p>
+</div>
+{flash_html}
 {stats_html}
+{review_html}
 {plugins_html}
 {accounts_html}
 {activity_html}
 </div>
 {_footer_html()}
 {_RELATIVE_TIME_JS}"""
-    return _html(body, title="Dashboard \u2014 MCP Gateway")
+    return _html(body, title="Operations \u2014 AgentOps Desk")
 
 
 # ── Admin renderer ────────────────────────────────────────────────────────────
@@ -1404,7 +1530,7 @@ function switchTab(name){
 {_RELATIVE_TIME_JS}
 {modal_js}
 {tab_js}"""
-    return _html(body, title="Admin \u2014 MCP Gateway")
+    return _html(body, title="Admin \u2014 AgentOps Desk")
 
 
 # ── Audit detail renderer ─────────────────────────────────────────────────────
@@ -1631,5 +1757,6 @@ def get_dashboard_routes() -> list[Route]:
         Route("/dash/admin/external/remove", admin_remove_external, methods=["POST"]),
         Route("/dash/admin/external/refresh", admin_refresh_external, methods=["POST"]),
         Route("/dash/audit/{entry_id:int}", audit_detail_page, methods=["GET"]),
+        Route("/dash/review/{entry_id:int}", review_audit_entry, methods=["POST"]),
         Route("/dash/logout", logout_page, methods=["GET"]),
     ]

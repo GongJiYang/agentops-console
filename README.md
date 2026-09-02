@@ -1,6 +1,6 @@
-# uni-mcp-gateway
+# AgentOps Desk
 
-A unified MCP (Model Context Protocol) gateway that aggregates multiple MCP servers and API plugins behind a single endpoint — with authentication, granular rate limiting, audit logging, a REST API bridge, and a web dashboard.
+An operations console and unified MCP gateway for connecting, controlling, and auditing AI agents across tools and accounts.
 
 Connect your AI agents to dozens of services through one URL, one API key, one audit trail.
 
@@ -25,7 +25,7 @@ We run AI agents across dozens of environments — Cursor, Claude Desktop, Openc
 - **Plugin architecture** — Drop a Python file in `plugins/`, restart, done
 - **External MCP bridging** — Proxy any remote MCP server through the gateway (no code needed)
 - **REST API bridge** — Every tool is also available via standard HTTP `GET`/`POST` endpoints
-- **Web dashboard** — Login, view stats, manage keys, browse audit logs
+- **Operations dashboard** — Monitor execution health, review risky actions, manage keys, and browse audit logs
 
 ### Security
 - **API key authentication** — Multiple keys with independent permissions
@@ -48,6 +48,11 @@ We run AI agents across dozens of environments — Cursor, Claude Desktop, Openc
   - `get_tool_schema` — Get parameters for a specific tool
   - `call_tool` — Execute any tool
 
+
+### Human-in-the-loop operations
+- **Risk watchlist** — Surfaces failed and state-changing tool calls for operator review
+- **Review decisions** — Acknowledge routine actions or escalate suspicious executions
+- **Execution evidence** — Inspect the exact request, response, caller, and duration before deciding
 ## Quick Start
 
 ### 1. Clone and install
@@ -72,6 +77,14 @@ echo "Your admin token: $MCP_AUTH_TOKEN"
 ```bash
 python -m uvicorn main:app --host 0.0.0.0 --port 8080
 ```
+
+For a seeded local portfolio demo:
+
+```bash
+MCP_AUTH_TOKEN=agentops-demo AGENTOPS_DEMO=true GATEWAY_DB_PATH=./agentops-demo.db python main.py
+```
+
+Open `http://localhost:8080/dash` and sign in with `agentops-demo`.
 
 ### 4. Connect
 
