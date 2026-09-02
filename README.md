@@ -4,6 +4,8 @@ An operations console and unified MCP gateway for connecting, controlling, and a
 
 Connect your AI agents to dozens of services through one URL, one API key, one audit trail.
 
+**[Open the interactive portfolio demo](https://gongjiyang.github.io/agentops-console/)** · seeded public data, no login or credentials required
+
 ## Why We Built This
 
 We run AI agents across dozens of environments — Cursor, Claude Desktop, Opencode, custom bots. Every environment needs its own MCP connections, its own auth, its own config. It breaks constantly and scales terribly. Here's what drove us to build this:
