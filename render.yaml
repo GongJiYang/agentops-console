@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -e .
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: MCP_PORT=$PORT python main.py
     healthCheckPath: /dash
     envVars:
       - key: PYTHON_VERSION
